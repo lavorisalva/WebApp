@@ -37,12 +37,18 @@ if not st.session_state['logged_in']:
                 st.error("Password errata")
     st.stop()
 
-# ---- Config da secrets ----
-config = st.secrets.get("config", {})
-okey = config.get("api_key", "")
-api_url = config.get("api_base_url", "https://opencode.ai/zen/v1")
-bkey = config.get("binance_key", "")
-bsec = config.get("binance_secret", "")
+# ---- Config da secrets o env ----
+try:
+    config = st.secrets.get("config", {})
+    st.sidebar.caption("Secrets caricati: OK")
+except Exception as e:
+    config = {}
+    st.sidebar.caption(f"Secrets error: {str(e)[:30]}")
+
+okey = config.get("api_key", "") or os.environ.get("API_KEY", "")
+api_url = config.get("api_base_url", "") or os.environ.get("API_BASE_URL", "https://opencode.ai/zen/v1")
+bkey = config.get("binance_key", "") or os.environ.get("BINANCE_KEY", "")
+bsec = config.get("binance_secret", "") or os.environ.get("BINANCE_SECRET", "")
 
 brain = NexusBrain()
 brain.set_config(okey, bkey, bsec, api_url if api_url else None)
