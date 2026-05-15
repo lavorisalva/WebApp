@@ -64,8 +64,8 @@ bsec = st.sidebar.text_input("Segreto Binance (opzionale)", type="password",
                               value=st.session_state.get('bsec', ''))
 st.session_state['bsec'] = bsec
 
-exchange_name = st.sidebar.selectbox("Exchange", ["binance", "binanceus", "bybit", "kucoin", "mexc"],
-                                      index=0, help="binanceus se sei bloccato")
+exchange_name = st.sidebar.selectbox("Exchange", ["bybit", "binance", "binanceus", "kucoin", "mexc"],
+                                      index=0, help="bybit funziona sempre dal cloud. binance e bloccato su server USA")
 proxy_url = st.sidebar.text_input("Proxy (opzionale)", placeholder="http://proxy:porta o lascia vuoto",
                                    value=st.session_state.get('proxy_url', ''))
 st.session_state['proxy_url'] = proxy_url
