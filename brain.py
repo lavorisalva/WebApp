@@ -14,12 +14,14 @@ class NexusBrain:
         self.db_path = db_path
         self._init_db()
         exchange_map = {
-            'binance': ccxt.binance,
-            'binanceus': ccxt.binanceus,
             'bybit': ccxt.bybit,
+            'binance': ccxt.binance,
             'kucoin': ccxt.kucoin,
             'mexc': ccxt.mexc,
         }
+        # binanceus potrebbe non esistere in versioni vecchie di ccxt
+        if hasattr(ccxt, 'binanceus'):
+            exchange_map['binanceus'] = ccxt.binanceus
         exchange_class = exchange_map.get(exchange_name, ccxt.binance)
         kwargs = {'enableRateLimit': True}
         if proxy:
