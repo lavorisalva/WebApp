@@ -127,7 +127,7 @@ with col_left:
             cp = brain.exchange.fetch_ticker(sym)['last']
             sl_d = round(cp * 0.95, 2); tp_d = round(cp * 1.05, 2)
         except:
-            cp = 0; sl_d = 0; tp_d = 0
+            cp = 0.0; sl_d = 0.0; tp_d = 0.0
         sl_price = cs.number_input("Stop Loss", value=sl_d, step=1.0, key="manual_sl", format="%.2f")
         tp_price = ct.number_input("Take Profit", value=tp_d, step=1.0, key="manual_tp", format="%.2f")
 
