@@ -32,19 +32,24 @@ class NexusBrain:
         if proxy:
             kwargs['httpsProxy'] = proxy
         
-        # Prova l'exchange selezionato, altrimenti fallback su bybit/binance
+        # Prova exchange in ordine senza parametri extra
         self.exchange = None
-        for ex_name, ex_class in [(exchange_name, exchange_class), ('bybit', ccxt.bybit), ('binance', ccxt.binance)]:
-            if ex_class:
-                try:
-                    self.exchange = ex_class(**kwargs)
-                    self.exchange_name = ex_name
-                    print(f"DEBUG: Exchange OK: {ex_name}")
-                    break
-                except Exception as e:
-                    print(f"DEBUG: Exchange {ex_name} fallito: {e}")
+        for ex_name, ex_class in [('bybit', ccxt.bybit), ('binance', ccxt.binance)]:
+            try:
+                ex = ex_class()
+                ex.load_markets()
+                self.exchange = ex
+                self.exchange_name = ex_name
+                if proxy:
+                    ex.httpsProxy = proxy
+                break
+            except:
+                continue
         if not self.exchange:
-            raise RuntimeError("Nessun exchange disponibile")
+            # Fallback minimale
+            self.exchange = ccxt.bybit()
+            self.exchange_name = 'bybit'
+        self.client = None
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
