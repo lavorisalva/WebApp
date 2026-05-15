@@ -10,10 +10,21 @@ from openai import OpenAI
 from news_fetcher import get_latest_crypto_news
 
 class NexusBrain:
-    def __init__(self, db_path='nexus_memory.db'):
+    def __init__(self, db_path='nexus_memory.db', exchange_name='binance', proxy=None):
         self.db_path = db_path
         self._init_db()
-        self.exchange = ccxt.binance({'enableRateLimit': True})
+        exchange_map = {
+            'binance': ccxt.binance,
+            'binanceus': ccxt.binanceus,
+            'bybit': ccxt.bybit,
+            'kucoin': ccxt.kucoin,
+            'mexc': ccxt.mexc,
+        }
+        exchange_class = exchange_map.get(exchange_name, ccxt.binance)
+        kwargs = {'enableRateLimit': True}
+        if proxy:
+            kwargs['proxies'] = {'https': proxy, 'http': proxy}
+        self.exchange = exchange_class(**kwargs)
         self.client = None
 
     def _init_db(self):
