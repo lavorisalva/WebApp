@@ -10,7 +10,7 @@ from openai import OpenAI
 from news_fetcher import get_latest_crypto_news
 
 class NexusBrain:
-    def __init__(self, db_path='nexus_memory.db', exchange_name='binance', proxy=None):
+    def __init__(self, db_path='nexus_memory.db', exchange_name='bybit', proxy=None):
         self.db_path = db_path
         self._init_db()
         exchange_map = {
@@ -19,18 +19,20 @@ class NexusBrain:
             'kucoin': ccxt.kucoin,
             'mexc': ccxt.mexc,
         }
-        # binanceus potrebbe non esistere in versioni vecchie di ccxt
         if hasattr(ccxt, 'binanceus'):
             exchange_map['binanceus'] = ccxt.binanceus
-        exchange_class = exchange_map.get(exchange_name, ccxt.binance)
+        
+        self.exchange_name = exchange_name
+        exchange_class = exchange_map.get(exchange_name)
+        if not exchange_class:
+            exchange_class = ccxt.bybit
+            self.exchange_name = 'bybit'
+        
         kwargs = {'enableRateLimit': True}
         if proxy:
             kwargs['httpsProxy'] = proxy
-        try:
-            self.exchange = exchange_class(**kwargs)
-        except Exception as e:
-            print(f"Exchange init error: {e}, fallback to binance")
-            self.exchange = ccxt.binance({'enableRateLimit': True})
+        self.exchange = exchange_class(**kwargs)
+        print(f"DEBUG: Exchange inizializzato: {self.exchange_name}")
         self.client = None
 
     def _init_db(self):
@@ -62,7 +64,8 @@ class NexusBrain:
             self.exchange.load_markets()
             tiks = [m for m in self.exchange.markets if m.endswith('/USDT') and 'UP/' not in m and 'DOWN/' not in m]
             return sorted(tiks)
-        except:
+        except Exception as e:
+            print(f"Ticker error {self.exchange_name}: {e}")
             return ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
     def get_available_models(self):
@@ -142,7 +145,7 @@ class NexusBrain:
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
             rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
         except Exception as e:
-            return {"azione": "ERRORE", "ragionamento": f"Errore dati Binance: {str(e)}"}, 0, 0
+            return {"azione": "ERRORE", "ragionamento": f"Errore {self.exchange_name}: {str(e)}"}, 0, 0
 
         news = " | ".join(get_latest_crypto_news()[:5])
         prompt = f"""Dati: {symbol} a {price}$, RSI {rsi:.2f}. News: {news}.
