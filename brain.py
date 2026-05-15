@@ -34,7 +34,10 @@ class NexusBrain:
         
         # Prova exchange in ordine senza parametri extra
         self.exchange = None
-        for ex_name, ex_class in [('bybit', ccxt.bybit), ('binance', ccxt.binance)]:
+        for ex_name in ['kucoin', 'bybit', 'binance']:
+            ex_class = exchange_map.get(ex_name)
+            if not ex_class:
+                continue
             try:
                 ex = ex_class()
                 ex.load_markets()
@@ -46,10 +49,20 @@ class NexusBrain:
             except:
                 continue
         if not self.exchange:
-            # Fallback minimale
-            self.exchange = ccxt.bybit()
-            self.exchange_name = 'bybit'
+            self.exchange = ccxt.kucoin()
+            self.exchange_name = 'kucoin'
         self.client = None
+
+    def _fetch_price_fallback(self, symbol):
+        """Se l'exchange non funziona, usa CoinGecko gratuitamente"""
+        try:
+            coin = symbol.split('/')[0].lower()
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd", timeout=10)
+            if r.status_code == 200:
+                return r.json().get(coin, {}).get('usd', 0)
+        except:
+            pass
+        return 0
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -154,14 +167,18 @@ class NexusBrain:
     def decide_trade(self, symbol, model_id):
         if not self.client:
             return {"azione": "ERRORE", "ragionamento": "Chiave API mancante"}, 0, 0
+        price, rsi = 0, 0
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker['last']
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
             rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
-        except Exception as e:
-            return {"azione": "ERRORE", "ragionamento": f"Errore {self.exchange_name}: {str(e)}"}, 0, 0
+        except:
+            price = self._fetch_price_fallback(symbol)
+            rsi = 50
+        if price == 0:
+            return {"azione": "ERRORE", "ragionamento": f"Exchange {self.exchange_name} bloccato. Prova KuCoin o usa proxy."}, 0, 0
 
         news = " | ".join(get_latest_crypto_news()[:5])
         prompt = f"""Dati: {symbol} a {price}$, RSI {rsi:.2f}. News: {news}.
