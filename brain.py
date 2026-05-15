@@ -31,9 +31,20 @@ class NexusBrain:
         kwargs = {'enableRateLimit': True}
         if proxy:
             kwargs['httpsProxy'] = proxy
-        self.exchange = exchange_class(**kwargs)
-        print(f"DEBUG: Exchange inizializzato: {self.exchange_name}")
-        self.client = None
+        
+        # Prova l'exchange selezionato, altrimenti fallback su bybit/binance
+        self.exchange = None
+        for ex_name, ex_class in [(exchange_name, exchange_class), ('bybit', ccxt.bybit), ('binance', ccxt.binance)]:
+            if ex_class:
+                try:
+                    self.exchange = ex_class(**kwargs)
+                    self.exchange_name = ex_name
+                    print(f"DEBUG: Exchange OK: {ex_name}")
+                    break
+                except Exception as e:
+                    print(f"DEBUG: Exchange {ex_name} fallito: {e}")
+        if not self.exchange:
+            raise RuntimeError("Nessun exchange disponibile")
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
