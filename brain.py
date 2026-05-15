@@ -23,8 +23,12 @@ class NexusBrain:
         exchange_class = exchange_map.get(exchange_name, ccxt.binance)
         kwargs = {'enableRateLimit': True}
         if proxy:
-            kwargs['proxies'] = {'https': proxy, 'http': proxy}
-        self.exchange = exchange_class(**kwargs)
+            kwargs['httpsProxy'] = proxy
+        try:
+            self.exchange = exchange_class(**kwargs)
+        except Exception as e:
+            print(f"Exchange init error: {e}, fallback to binance")
+            self.exchange = ccxt.binance({'enableRateLimit': True})
         self.client = None
 
     def _init_db(self):
