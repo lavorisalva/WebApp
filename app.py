@@ -116,9 +116,11 @@ with col_left:
     # --- Trading AI ---
     with st.container(border=True):
         st.subheader("Analisi AI")
+        
+        # Bottone analisi
         if st.button("Avvia Analisi AI", type="primary", use_container_width=True):
             if not okey:
-                st.error("Chiave API mancante in secrets.toml!")
+                st.error("Chiave API mancante!")
             elif not mod:
                 st.error("Inserisci un modello valido!")
             else:
@@ -126,23 +128,39 @@ with col_left:
                     res, prc, rsi = brain.decide_trade(sym, mod)
                     if res['azione'] == "ERRORE":
                         st.error(res['ragionamento'])
+                        st.session_state['ai_result'] = None
                     else:
-                        ca, cb = st.columns(2)
-                        ca.metric("Prezzo", f"{prc:,.2f} $")
-                        cb.metric("RSI", f"{rsi:.1f}")
-                        emoji = {"COMPRA":" BUY", "VENDI":" SELL", "ATTENDI":" HOLD"}
-                        st.subheader(f"{emoji.get(res['azione'],'')} {res['azione']}")
-                        st.caption(res.get('ragionamento', ''))
-                        if res['azione'] in ("COMPRA", "VENDI"):
-                            st.info(f"SL: {res.get('stop_loss',0):,.2f} | TP: {res.get('take_profit',0):,.2f}")
-                            if mode == "Real Trading":
-                                with st.spinner("Ordine..."):
-                                    o = brain.execute_real_order(sym, res['azione'])
-                                    if o: st.success(f"Eseguito! ID: {o['id']}")
-                                    else: st.error("Errore ordine")
-                            if st.button("Conferma e registra"):
-                                brain.save_trade(sym, mode, res, prc)
-                                st.success("Trade registrato!")
+                        st.session_state['ai_result'] = {'res': res, 'prc': prc, 'rsi': rsi, 'sym': sym}
+                        st.rerun()
+        
+        # Mostra risultato se presente in sessione
+        ai_data = st.session_state.get('ai_result')
+        if ai_data and ai_data['sym'] == sym:
+            res, prc, rsi = ai_data['res'], ai_data['prc'], ai_data['rsi']
+            ca, cb = st.columns(2)
+            ca.metric("Prezzo", f"{prc:,.2f} $")
+            cb.metric("RSI", f"{rsi:.1f}")
+            emoji = {"COMPRA":" BUY", "VENDI":" SELL", "ATTENDI":" HOLD"}
+            st.subheader(f"{emoji.get(res['azione'],'')} {res['azione']}")
+            st.caption(res.get('ragionamento', ''))
+            if res['azione'] in ("COMPRA", "VENDI"):
+                st.info(f"SL: {res.get('stop_loss',0):,.2f} | TP: {res.get('take_profit',0):,.2f}")
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    if st.button("Conferma e registra trade", use_container_width=True, type="primary"):
+                        if mode == "Real Trading":
+                            with st.spinner("Ordine in corso..."):
+                                o = brain.execute_real_order(sym, res['azione'])
+                                if o: st.success(f"Eseguito! ID: {o['id']}")
+                                else: st.error("Errore ordine reale")
+                        brain.save_trade(sym, mode, res, prc)
+                        st.success("Trade registrato!")
+                        st.session_state['ai_result'] = None
+                        st.rerun()
+                with col_c2:
+                    if st.button("Annulla", use_container_width=True):
+                        st.session_state['ai_result'] = None
+                        st.rerun()
 
     # --- Trading Manuale ---
     with st.container(border=True):
