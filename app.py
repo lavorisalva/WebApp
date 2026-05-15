@@ -20,8 +20,8 @@ st.markdown("""
 # ---- Login ----
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
-
-login_password = st.secrets.get("config", {}).get("login_password", "nexus2024")
+if 'app_password' not in st.session_state:
+    st.session_state['app_password'] = "nexus2024"
 
 if not st.session_state['logged_in']:
     st.markdown("<h1 style='text-align:center;margin-top:80px'>Nexus-Trader Pro</h1>", unsafe_allow_html=True)
@@ -29,26 +29,40 @@ if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 1, 1])
     with c2:
         pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
-        if st.button("Accedi", type="primary", use_container_width=True):
-            if pwd == login_password:
-                st.session_state['logged_in'] = True
-                st.rerun()
-            else:
-                st.error("Password errata")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Accedi", type="primary", use_container_width=True):
+                if pwd == st.session_state['app_password']:
+                    st.session_state['logged_in'] = True
+                    st.rerun()
+                else:
+                    st.error("Password errata")
+        with col_b:
+            if st.button("Reset Password", use_container_width=True):
+                st.session_state['app_password'] = "nexus2024"
+                st.success("Reset a nexus2024")
     st.stop()
 
-# ---- Config da secrets o env ----
-try:
-    config = st.secrets.get("config", {})
-    st.sidebar.caption("Secrets caricati: OK")
-except Exception as e:
-    config = {}
-    st.sidebar.caption(f"Secrets error: {str(e)[:30]}")
+# ---- Sidebar: Config manuale ----
+st.sidebar.header("Configurazione")
 
-okey = config.get("api_key", "") or os.environ.get("API_KEY", "")
-api_url = config.get("api_base_url", "") or os.environ.get("API_BASE_URL", "https://opencode.ai/zen/v1")
-bkey = config.get("binance_key", "") or os.environ.get("BINANCE_KEY", "")
-bsec = config.get("binance_secret", "") or os.environ.get("BINANCE_SECRET", "")
+okey = st.sidebar.text_input("Chiave API (Opencode/OpenAI)", type="password",
+                              value=st.session_state.get('okey', ''),
+                              help="Inserisci la tua chiave API")
+st.session_state['okey'] = okey
+
+api_url = st.sidebar.text_input("API Base URL", 
+                                 value=st.session_state.get('api_url', 'https://opencode.ai/zen/v1'),
+                                 help="Lascia per Opencode Zen")
+st.session_state['api_url'] = api_url
+
+bkey = st.sidebar.text_input("Chiave Binance (opzionale)", type="password",
+                              value=st.session_state.get('bkey', ''))
+st.session_state['bkey'] = bkey
+
+bsec = st.sidebar.text_input("Segreto Binance (opzionale)", type="password",
+                              value=st.session_state.get('bsec', ''))
+st.session_state['bsec'] = bsec
 
 brain = NexusBrain()
 brain.set_config(okey, bkey, bsec, api_url if api_url else None)
