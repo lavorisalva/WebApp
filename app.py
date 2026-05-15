@@ -64,7 +64,13 @@ bsec = st.sidebar.text_input("Segreto Binance (opzionale)", type="password",
                               value=st.session_state.get('bsec', ''))
 st.session_state['bsec'] = bsec
 
-brain = NexusBrain()
+exchange_name = st.sidebar.selectbox("Exchange", ["binance", "binanceus", "bybit", "kucoin", "mexc"],
+                                      index=0, help="binanceus se sei bloccato")
+proxy_url = st.sidebar.text_input("Proxy (opzionale)", placeholder="http://proxy:porta o lascia vuoto",
+                                   value=st.session_state.get('proxy_url', ''))
+st.session_state['proxy_url'] = proxy_url
+
+brain = NexusBrain(exchange_name=exchange_name, proxy=proxy_url if proxy_url else None)
 brain.set_config(okey, bkey, bsec, api_url if api_url else None)
 
 # ---- Sidebar ----
