@@ -1,0 +1,7 @@
+ccxt
+pandas
+ta
+openai
+streamlit
+requests
+web3
