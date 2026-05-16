@@ -334,14 +334,38 @@ Rispondi con JSON: {{"azione":"COMPRA","stop_loss":{price*0.95:.2f},"take_profit
             raw = msg.content or getattr(msg, 'reasoning_content', '') or ''
             print(f"DEBUG AI: {raw[:300]}")
             
-            # Pulisci e prova a estrarre JSON
             clean = re.sub(r'```json|```|`', '', raw).strip()
             parsed = self._extract_json(clean)
             if parsed:
                 return parsed, price, rsi
             return {"azione": "ERRORE", "ragionamento": f"Risposta: {raw[:150]}"}, price, rsi
         except Exception as e:
-            return {"azione": "ERRORE", "ragionamento": str(e)}, price, rsi
+            err = str(e)
+            if "Connection" in err or "connect" in err or "timeout" in err:
+                try:
+                    base = str(self.client.base_url).rstrip('/')
+                    if not base.endswith('/v1'):
+                        base = self.client._base_url or "https://opencode.ai/zen/v1"
+                    url = f"{base}/chat/completions"
+                    ak = self.client.api_key or self.client._api_key or ""
+                    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {ak}"}
+                    payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}],
+                               "temperature": 0.1, "max_tokens": 2000}
+                    proxies = self.exchange.proxies if self.exchange.proxies else None
+                    r = requests.post(url, json=payload, headers=headers, timeout=30, proxies=proxies)
+                    if r.status_code == 200:
+                        data = r.json()
+                        msg = data['choices'][0]['message']
+                        raw = msg.get('content', '') or msg.get('reasoning_content', '') or ''
+                        clean = re.sub(r'```json|```|`', '', raw).strip()
+                        parsed = self._extract_json(clean)
+                        if parsed:
+                            return parsed, price, rsi
+                        return {"azione": "ERRORE", "ragionamento": f"Risposta: {raw[:150]}"}, price, rsi
+                    return {"azione": "ERRORE", "ragionamento": f"HTTP {r.status_code}"}, price, rsi
+                except Exception as e2:
+                    return {"azione": "ERRORE", "ragionamento": f"Connessione API fallita: {str(e2)}"}, price, rsi
+            return {"azione": "ERRORE", "ragionamento": err}, price, rsi
 
     def execute_real_order(self, symbol, action, amount_usdt=20):
         try:
