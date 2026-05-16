@@ -3,7 +3,6 @@ import pandas as pd
 import sqlite3
 import os
 import json
-import subprocess
 from brain import NexusBrain
 
 st.set_page_config(page_title="SBTrading-Pro", page_icon="logo.svg", layout="wide", initial_sidebar_state="expanded")
@@ -260,28 +259,7 @@ elif mods_list:
 else:
     mod = st.sidebar.text_input("Modello", value="big-pickle", key="mod_manual")
 
-# Bot Daemon (background trading) — solo in locale
 is_cloud = not os.path.exists(K_FILE)
-if not is_cloud:
-    st.sidebar.divider()
-    if daemon_running:
-        st.sidebar.success("🤖 Bot Daemon ATTIVO (background)")
-        if st.sidebar.button("Ferma Bot", type="secondary"):
-            save_state(daemon_running=False)
-            st.rerun()
-    else:
-        if st.sidebar.button("Avvia Bot (background)", type="primary"):
-            save_state(daemon_running=True, user_id=uid, username=st.session_state['username'],
-                      api_key=okey, model=mod, proxy=c_proxy,
-                      tg_token=c_tg_tok, tg_chat=c_tg_chat)
-            python = r"C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\python.exe"
-            log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "daemon.log"), "w")
-            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-            subprocess.Popen([python, "bot_daemon.py"], cwd=os.path.dirname(os.path.abspath(__file__)),
-                            stdout=log, stderr=subprocess.STDOUT,
-                            creationflags=flags)
-            st.success("Bot avviato in background!")
-            st.rerun()
 
 # ---- TAB ORGANIZZATIVI ----
 TAB_TRADING, TAB_PORTFOLIO, TAB_WALLET = st.tabs(["Trading", "Portafoglio", "Wallet"])
