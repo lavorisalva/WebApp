@@ -82,15 +82,32 @@ class NexusBrain:
         base = symbol.split('/')[0]
         return self.SYMBOL_TO_CG.get(base, base.lower())
 
+    def _bn_symbol(self, symbol):
+        return symbol.replace('/', '')
+
     def _fetch_coin_price(self, symbol):
+        # 1. Binance autenticato
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
-            return ticker['last']
+            return self.exchange.fetch_ticker(symbol)['last']
         except:
             pass
+        # 2. Binance API pubblica (senza auth — funziona anche su cloud)
+        bn_pair = self._bn_symbol(symbol)
+        sources = [
+            f"https://api.binance.com/api/v3/ticker/price?symbol={bn_pair}",
+            f"https://api.binance.us/api/v3/ticker/price?symbol={bn_pair}",
+        ]
+        for url in sources:
+            try:
+                r = requests.get(url, timeout=5)
+                if r.status_code == 200:
+                    return float(r.json()['price'])
+            except:
+                pass
+        # 3. CoinGecko fallback
         try:
             cg_id = self._cg_symbol(symbol)
-            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd", timeout=8)
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd", timeout=5)
             if r.status_code == 200:
                 return r.json().get(cg_id, {}).get('usd', 0)
         except:
@@ -98,17 +115,25 @@ class NexusBrain:
         return 0
 
     def _fetch_coin_ohlcv(self, symbol):
+        # 1. Binance autenticato
         try:
             return self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
         except:
             pass
+        # 2. Binance API pubblica
+        bn_pair = self._bn_symbol(symbol)
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/klines?symbol={bn_pair}&interval=1h&limit=50", timeout=5)
+            if r.status_code == 200:
+                return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in r.json()]
+        except:
+            pass
+        # 3. CoinGecko fallback
         try:
             cg_id = self._cg_symbol(symbol)
-            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?days=2&vs_currency=usd", timeout=8)
+            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?days=2&vs_currency=usd", timeout=5)
             if r.status_code == 200:
-                data = r.json()
-                import time
-                return [[int(t), o, h, l, c, 0] for t, o, h, l, c in data]
+                return [[int(t), o, h, l, c, 0] for t, o, h, l, c in r.json()]
         except:
             pass
         return []
