@@ -10,59 +10,28 @@ from openai import OpenAI
 from news_fetcher import get_latest_crypto_news
 
 class NexusBrain:
-    def __init__(self, db_path='nexus_memory.db', exchange_name='bybit', proxy=None):
+    COINGECKO_IDS = {"ethereum":"ethereum","bsc":"binancecoin","polygon":"matic-network",
+                     "base":"ethereum","linea":"ethereum","bitcoin":"bitcoin",
+                     "tron":"tron","xrp":"ripple","dogecoine":"dogecoin"}
+    CG_PLATFORMS = {"ethereum":"ethereum","bsc":"binance-smart-chain","polygon":"polygon-pos"}
+    RPC_MAP = {
+        "ethereum": ["https://eth.llamarpc.com", "https://rpc.ankr.com/eth"],
+        "bsc": ["https://bsc.publicnode.com", "https://rpc.ankr.com/bsc"],
+        "polygon": ["https://polygon-rpc.com", "https://rpc.ankr.com/polygon"],
+        "base": ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+        "linea": ["https://rpc.linea.build", "https://linea-rpc.publicnode.com"],
+    }
+
+    def __init__(self, db_path='nexus_memory.db'):
         self.db_path = db_path
         self._init_db()
-        exchange_map = {
-            'bybit': ccxt.bybit,
-            'binance': ccxt.binance,
-            'kucoin': ccxt.kucoin,
-            'mexc': ccxt.mexc,
-        }
-        if hasattr(ccxt, 'binanceus'):
-            exchange_map['binanceus'] = ccxt.binanceus
-        
-        self.exchange_name = exchange_name
-        exchange_class = exchange_map.get(exchange_name)
-        if not exchange_class:
-            exchange_class = ccxt.bybit
-            self.exchange_name = 'bybit'
-        
-        kwargs = {'enableRateLimit': True}
-        if proxy:
-            kwargs['httpsProxy'] = proxy
-        
-        # Prova exchange in ordine senza parametri extra
-        self.exchange = None
-        for ex_name in ['kucoin', 'bybit', 'binance']:
-            ex_class = exchange_map.get(ex_name)
-            if not ex_class:
-                continue
-            try:
-                ex = ex_class()
-                ex.load_markets()
-                self.exchange = ex
-                self.exchange_name = ex_name
-                if proxy:
-                    ex.httpsProxy = proxy
-                break
-            except:
-                continue
-        if not self.exchange:
-            self.exchange = ccxt.kucoin()
-            self.exchange_name = 'kucoin'
+        self.exchange = ccxt.binance({'enableRateLimit': True})
         self.client = None
-
-    def _fetch_price_fallback(self, symbol):
-        """Se l'exchange non funziona, usa CoinGecko gratuitamente"""
-        try:
-            coin = symbol.split('/')[0].lower()
-            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd", timeout=10)
-            if r.status_code == 200:
-                return r.json().get(coin, {}).get('usd', 0)
-        except:
-            pass
-        return 0
+        self.w3 = None
+        self.proxy_url = None
+        self.tg_token = None
+        self.tg_chat_id = None
+        self._price_cache = {}
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -71,10 +40,66 @@ class NexusBrain:
                 timestamp DATETIME, symbol TEXT, mode TEXT, azione TEXT,
                 entry_price REAL, stop_loss REAL, take_profit REAL,
                 reasoning TEXT, profit_perc REAL DEFAULT 0, status TEXT DEFAULT 'APERTO')''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE, password TEXT, created_at DATETIME)''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS portfolio (
+                user_id INTEGER PRIMARY KEY, balance REAL DEFAULT 1000, created_at DATETIME)''')
+            for col, typ in [("azione","TEXT"),("entry_time","TEXT"),
+                             ("highest_price","REAL DEFAULT 0"),("last_ai_check","TEXT"),
+                             ("ai_check_count","INTEGER DEFAULT 0"),("model_used","TEXT"),
+                             ("user_id","INTEGER DEFAULT 0"),("amount_usdt","REAL DEFAULT 20")]:
+                try:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+                except:
+                    pass
+
+    def _rpc_call(self, chain, method, params):
+        for rpc in self.RPC_MAP.get(chain, []):
             try:
-                conn.execute("ALTER TABLE trades ADD COLUMN azione TEXT")
+                r = requests.post(rpc, json={"jsonrpc":"2.0","method":method,"params":params,"id":1}, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    if 'result' in data:
+                        return data['result']
             except:
-                pass
+                continue
+        return None
+
+    def _fetch_price(self, coin_id):
+        if coin_id in self._price_cache:
+            return self._price_cache[coin_id]
+        try:
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd", timeout=8)
+            if r.status_code == 200:
+                price = r.json().get(coin_id, {}).get('usd', 0)
+                if price:
+                    self._price_cache[coin_id] = price
+                    return price
+        except:
+            pass
+        return 0
+
+    def _fetch_token_price(self, chain, contract):
+        plat = self.CG_PLATFORMS.get(chain)
+        if not plat or contract in self._price_cache:
+            return self._price_cache.get(contract, 0)
+        try:
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/token_price/{plat}?contract_addresses={contract}&vs_currencies=usd", timeout=8)
+            if r.status_code == 200:
+                price = r.json().get(contract.lower(), {}).get('usd', 0)
+                if price:
+                    self._price_cache[contract] = price
+                    return price
+        except:
+            pass
+        return 0
+
+    def _read_token_decimals(self, chain, contract):
+        data = self._rpc_call(chain, "eth_call", [{"to": contract, "data": "0x313ce567"}, "latest"])
+        if data and data != '0x':
+            return int(data, 16)
+        return 18
 
     def set_config(self, api_key, bk=None, bs=None, base_url=None):
         if api_key:
@@ -84,17 +109,65 @@ class NexusBrain:
             self.client = OpenAI(**kwargs)
         else:
             self.client = None
-        if bk and bs:
+        if bk and bs: 
             self.exchange.apiKey = bk.strip()
             self.exchange.secret = bs.strip()
+
+    def set_proxy(self, proxy_url):
+        self.proxy_url = proxy_url
+        if proxy_url:
+            self.exchange.proxies = {'http': proxy_url, 'https': proxy_url}
+        else:
+            self.exchange.proxies = {}
+
+    def set_telegram(self, token, chat_id):
+        self.tg_token = token
+        self.tg_chat_id = chat_id
+
+    def send_telegram(self, message):
+        if not self.tg_token or not self.tg_chat_id:
+            return
+        try:
+            requests.get(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                         params={"chat_id": self.tg_chat_id, "text": message, "parse_mode": "HTML"},
+                         timeout=8, proxies=self.exchange.proxies if self.exchange.proxies else None)
+        except:
+            pass
+
+    def register_user(self, username, password):
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                cur = conn.execute("INSERT INTO users (username, password, created_at) VALUES (?,?,?)",
+                                   (username, password, datetime.datetime.now()))
+                uid = cur.lastrowid
+                conn.execute("INSERT OR IGNORE INTO portfolio (user_id, balance, created_at) VALUES (?,?,?)",
+                            (uid, 1000, datetime.datetime.now()))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def login_user(self, username, password):
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT id FROM users WHERE username=? AND password=?",
+                               (username, password)).fetchone()
+            if row:
+                return row[0]
+            # Crea utente admin se primo accesso
+            if not conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+                conn.execute("INSERT INTO users (username, password, created_at) VALUES (?,?,?)",
+                             ("admin", "admin", datetime.datetime.now()))
+                conn.commit()
+                if username == "admin" and password == "admin":
+                    return 1
+            return None
 
     def get_tickers(self):
         try:
             self.exchange.load_markets()
             tiks = [m for m in self.exchange.markets if m.endswith('/USDT') and 'UP/' not in m and 'DOWN/' not in m]
             return sorted(tiks)
-        except Exception as e:
-            print(f"Ticker error {self.exchange_name}: {e}")
+        except:
             return ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
     def get_available_models(self):
@@ -103,11 +176,13 @@ class NexusBrain:
         try:
             models = self.client.models.list()
             return sorted([m.id for m in models])
-        except:
+        except Exception as e:
+            print(f"DEBUG: Errore recupero modelli: {e}")
             return []
 
     @staticmethod
     def get_common_tokens(chain):
+        """Indirizzi contratti dei token piu comuni per ogni rete"""
         tokens = {
             "ethereum": {
                 "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -150,6 +225,7 @@ class NexusBrain:
         return tokens.get(chain, {})
 
     def _extract_json(self, text):
+        """Estrae il primo oggetto JSON valido da un testo, gestendo {} annidati"""
         stack = []
         for i, ch in enumerate(text):
             if ch == '{':
@@ -157,7 +233,7 @@ class NexusBrain:
             elif ch == '}':
                 if stack:
                     start = stack.pop()
-                    if not stack:
+                    if not stack:  # Trovato l'oggetto JSON più esterno
                         try:
                             return json.loads(text[start:i+1])
                         except:
@@ -167,30 +243,31 @@ class NexusBrain:
     def decide_trade(self, symbol, model_id):
         if not self.client:
             return {"azione": "ERRORE", "ragionamento": "Chiave API mancante"}, 0, 0
-        price, rsi = 0, 0
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker['last']
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
             rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
-        except:
-            price = self._fetch_price_fallback(symbol)
-            rsi = 50
-        if price == 0:
-            return {"azione": "ERRORE", "ragionamento": f"Exchange {self.exchange_name} bloccato. Prova KuCoin o usa proxy."}, 0, 0
+        except Exception as e: 
+            return {"azione": "ERRORE", "ragionamento": f"Errore dati Binance: {str(e)}"}, 0, 0
 
         news = " | ".join(get_latest_crypto_news()[:5])
         prompt = f"""Dati: {symbol} a {price}$, RSI {rsi:.2f}. News: {news}.
 Rispondi con JSON: {{"azione":"COMPRA","stop_loss":{price*0.95:.2f},"take_profit":{price*1.05:.2f},"ragionamento":"..."}}"""
-
+        
         try:
             response = self.client.chat.completions.create(
-                model=model_id, messages=[{"role": "user", "content": prompt}],
-                temperature=0.1, max_tokens=2000
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2000
             )
             msg = response.choices[0].message
             raw = msg.content or getattr(msg, 'reasoning_content', '') or ''
+            print(f"DEBUG AI: {raw[:300]}")
+            
+            # Pulisci e prova a estrarre JSON
             clean = re.sub(r'```json|```|`', '', raw).strip()
             parsed = self._extract_json(clean)
             if parsed:
@@ -210,84 +287,253 @@ Rispondi con JSON: {{"azione":"COMPRA","stop_loss":{price*0.95:.2f},"take_profit
             print(f"Errore esecuzione ordine: {e}")
             return None
 
-    def save_trade(self, symbol, mode, data, price):
+    def save_trade(self, symbol, mode, data, price, model_used="", user_id=0, amount_usdt=20):
+        now = datetime.datetime.now()
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute('INSERT INTO trades (timestamp, symbol, mode, azione, entry_price, stop_loss, take_profit, reasoning, status) VALUES (?,?,?,?,?,?,?,?,?)',
-                         (datetime.datetime.now(), symbol, mode, data.get('azione', 'ATTENDI'), price,
-                          data.get('stop_loss', 0), data.get('take_profit', 0), data['ragionamento'], 'APERTO'))
+            conn.execute('''INSERT INTO trades
+                (timestamp, symbol, mode, azione, entry_price, stop_loss, take_profit,
+                 reasoning, status, entry_time, highest_price, last_ai_check, ai_check_count, model_used, user_id, amount_usdt)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (now, symbol, mode, data.get('azione', 'ATTENDI'), price,
+                 data.get('stop_loss', 0), data.get('take_profit', 0),
+                 data['ragionamento'], 'APERTO', now, price, now, 0, model_used, user_id, amount_usdt))
+            if mode == "Paper Trading":
+                conn.execute("INSERT OR IGNORE INTO portfolio (user_id, balance, created_at) VALUES (?,?,?)",
+                            (user_id, 1000, now))
+                conn.execute("UPDATE portfolio SET balance = balance - ? WHERE user_id=?", (amount_usdt, user_id))
+                conn.commit()
+        emoji = {"COMPRA":"🔴","VENDI":"🔵","ATTENDI":"⚪"}
+        self.send_telegram(f"{emoji.get(data.get('azione',''),'')} <b>{symbol}</b>\n"
+                           f"Azione: {data.get('azione','')}\nEntry: ${price:.2f}\n"
+                           f"Importo: ${amount_usdt:.0f}\n"
+                           f"SL: ${data.get('stop_loss',0):.2f} | TP: ${data.get('take_profit',0):.2f}")
 
-    def check_and_close_trades(self):
+    # ---- EXIT STRATEGY ----
+    TRAILING_STOP = 0.015
+    MAX_HOURS = 24
+    AI_RECHECK_HOURS = 1
+    MAX_AI_CHECKS = 6
+
+    def _close_and_update(self, conn, trade, current_price, reason):
+        pnl = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
+        old_reason = trade['reasoning'] or ''
+        new_reason = f"{old_reason} | Chiuso: {reason}"
+        highest = max(trade['highest_price'] or trade['entry_price'], current_price)
+        conn.execute(
+            "UPDATE trades SET status='CHIUSO', profit_perc=?, reasoning=?, highest_price=? WHERE id=?",
+            (round(pnl, 2), new_reason, highest, trade['id'])
+        )
+        conn.commit()
+        if trade['mode'] == "Paper Trading":
+            amt = trade.get('amount_usdt', 20) or 20
+            credit = amt + (amt * pnl / 100)
+            with sqlite3.connect(self.db_path) as conn2:
+                conn2.execute("INSERT OR IGNORE INTO portfolio (user_id, balance, created_at) VALUES (?,?,?)",
+                            (trade.get('user_id', 0), 1000, datetime.datetime.now()))
+                conn2.execute("UPDATE portfolio SET balance = balance + ? WHERE user_id=?",
+                            (round(credit, 2), trade.get('user_id', 0)))
+                conn2.commit()
+        print(f"[TRADE] {trade['symbol']} CHIUSO ({reason}) | P&L: {pnl:+.2f}%")
+        pnl_emoji = "🟢" if pnl > 0 else "🔴"
+        self.send_telegram(f"{pnl_emoji} <b>{trade['symbol']} CHIUSO</b>\n"
+                           f"Motivo: {reason}\nP&L: {pnl:+.2f}%\n"
+                           f"Entry: ${trade['entry_price']:.2f} | Uscita: ${current_price:.2f}")
+
+    def _ai_recheck(self, trade, current_price, model):
+        try:
+            ohlcv = self.exchange.fetch_ohlcv(trade['symbol'], timeframe='1h', limit=50)
+            df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+            rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
+        except:
+            rsi = 50
+        entry = trade['entry_price']
+        profit = ((current_price - entry) / entry) * 100
+        hours = 0
+        try:
+            et = trade['entry_time'] or trade['timestamp']
+            hours = (datetime.datetime.now() - datetime.datetime.fromisoformat(et.replace('Z', ''))).total_seconds() / 3600
+        except:
+            pass
+        news = " | ".join(get_latest_crypto_news()[:3])
+        prompt = f"""Posizione APERTA: {trade['symbol']}
+Entry: ${entry:.2f}, Prezzo: ${current_price:.2f}, P&L: {profit:+.2f}%
+RSI: {rsi:.1f}, Ore aperta: {hours:.1f}
+Az. originale: {trade['azione']}
+News: {news}
+
+Regola: se la posizione e' in profitto, sei portato a CHIUDERE. Meglio un piccolo profitto sicuro che aspettare e rischiare.
+Rispondi SOLO con JSON:
+- Se mantenere (solo se hai certezza che salira' ancora): {{"decisione":"HOLD", "motivo":"..."}}
+- Se chiudere: {{"decisione":"CHIUDI", "motivo":"..."}}"""
+        try:
+            resp = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=500
+            )
+            raw = resp.choices[0].message.content or ''
+            clean = re.sub(r'```json|```|`', '', raw).strip()
+            parsed = self._extract_json(clean)
+            if parsed and parsed.get('decisione') in ('HOLD', 'CHIUDI'):
+                print(f"[AI] {trade['symbol']} rianalisi: {parsed['decisione']} — {parsed.get('motivo','')}")
+                return parsed['decisione']
+        except Exception as e:
+            print(f"[AI] Errore rianalisi {trade['symbol']}: {e}")
+        return 'HOLD'
+
+    def check_and_close_trades(self, default_model="big-pickle", user_id=0):
+        now = datetime.datetime.now()
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            trades = cursor.execute("SELECT * FROM trades WHERE status = 'APERTO'").fetchall()
+            trades = cursor.execute("SELECT * FROM trades WHERE status = 'APERTO' AND user_id=?", (user_id,)).fetchall()
             for t in trades:
                 try:
                     ticker = self.exchange.fetch_ticker(t['symbol'])
                     curr = ticker['last']
-                    cl = False
-                    if t['stop_loss'] > 0 and curr <= t['stop_loss']: cl = True
-                    if t['take_profit'] > 0 and curr >= t['take_profit']: cl = True
-                    if cl:
-                        p = ((curr - t['entry_price']) / t['entry_price']) * 100
-                        if t['mode'] == "Real Trading":
-                            try:
-                                base_currency = t['symbol'].split('/')[0]
-                                balance = self.exchange.fetch_balance()
-                                qty = balance['free'].get(base_currency, 0)
-                                if qty > 0:
-                                    self.exchange.create_market_order(t['symbol'], 'sell', qty)
-                            except: pass
-                        conn.execute("UPDATE trades SET status='CHIUSO', profit_perc=? WHERE id=?", (round(p, 2), t['id']))
-                        conn.commit()
-                except: continue
+                except:
+                    continue
+                entry_price = t['entry_price']
+                highest = max(t['highest_price'] or entry_price, curr)
+                # 1. Trailing stop (solo se in profitto)
+                if highest > entry_price * 1.01:
+                    trailing_price = highest * (1 - self.TRAILING_STOP)
+                    if curr <= trailing_price:
+                        self._close_and_update(conn, t, curr, "Trailing Stop")
+                        continue
+                # 2. Hard SL / TP
+                if t['stop_loss'] > 0 and curr <= t['stop_loss']:
+                    self._close_and_update(conn, t, curr, "Stop Loss")
+                    continue
+                if t['take_profit'] > 0 and curr >= t['take_profit']:
+                    self._close_and_update(conn, t, curr, "Take Profit")
+                    continue
+                # 3. Max duration
+                entry_time_str = t['entry_time'] or t['timestamp']
+                if entry_time_str:
+                    try:
+                        entry_time = datetime.datetime.fromisoformat(entry_time_str.replace('Z', ''))
+                        hours_open = (now - entry_time).total_seconds() / 3600
+                        if hours_open >= self.MAX_HOURS:
+                            self._close_and_update(conn, t, curr, "Max Duration")
+                            continue
+                    except:
+                        pass
+                # 4. Update highest price
+                conn.execute("UPDATE trades SET highest_price=? WHERE id=?", (highest, t['id']))
+                # 5. AI Re-analysis
+                last_check_str = t['last_ai_check']
+                check_count = t['ai_check_count'] or 0
+                should_recheck = (not last_check_str) or \
+                    ((now - datetime.datetime.fromisoformat(last_check_str.replace('Z', ''))).total_seconds() / 3600 >= self.AI_RECHECK_HOURS)
+                if should_recheck and check_count < self.MAX_AI_CHECKS:
+                    model = t['model_used'] or default_model
+                    if self.client and model:
+                        decision = self._ai_recheck(t, curr, model)
+                    else:
+                        decision = 'HOLD'
+                    if decision == "CHIUDI":
+                        self._close_and_update(conn, t, curr, "AI Decision")
+                        continue
+                    conn.execute(
+                        "UPDATE trades SET last_ai_check=?, ai_check_count=? WHERE id=?",
+                        (now.isoformat(), check_count + 1, t['id'])
+                    )
+                    conn.commit()
+            conn.commit()
+
+    def get_trades_by_user(self, user_id=0):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM trades WHERE user_id=? OR user_id=0 ORDER BY id DESC", (user_id,)).fetchall()
+            return rows
+
+    def get_portfolio_balance(self, user_id):
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT balance FROM portfolio WHERE user_id=?", (user_id,)).fetchone()
+            if row:
+                return row[0]
+            conn.execute("INSERT INTO portfolio (user_id, balance, created_at) VALUES (?,?,?)",
+                        (user_id, 1000, datetime.datetime.now()))
+            conn.commit()
+            return 1000.0
+
+    def init_portfolio(self, user_id, amount):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO portfolio (user_id, balance, created_at) VALUES (?,?,?)",
+                        (user_id, amount, datetime.datetime.now()))
+            conn.commit()
+
+    def get_exchange_balance(self):
+        if not self.exchange.apiKey or not self.exchange.secret:
+            return None
+        try:
+            self.exchange.load_markets()
+            bal = self.exchange.fetch_balance()
+            non_zero = {k: v for k, v in bal['total'].items() if v and v > 0}
+            return non_zero
+        except Exception as e:
+            err = str(e)
+            print(f"Errore fetch balance: {err}")
+            return f"Errore: {err}"
 
     def get_wallet_balance(self, address, chain="ethereum", token_address=None):
         if not address:
             return None
         try:
+            TICKERS = {"ethereum":"ETH","bsc":"BNB","polygon":"MATIC","base":"ETH","linea":"ETH","bitcoin":"BTC","tron":"TRX","xrp":"XRP","dogecoin":"DOGE"}
+            ticker = TICKERS.get(chain, "ETH")
             if chain in ("ethereum", "bsc", "polygon", "base", "linea"):
-                rpc_map = {
-                    "ethereum": "https://eth.llamarpc.com", "bsc": "https://bsc.publicnode.com",
-                    "polygon": "https://polygon-rpc.com", "base": "https://mainnet.base.org",
-                    "linea": "https://rpc.linea.build",
-                }
-                rpc = rpc_map[chain]
                 if token_address:
+                    decimals = self._read_token_decimals(chain, token_address)
                     data = "0x70a08231" + address[2:].zfill(64)
-                    r = requests.post(rpc, json={"jsonrpc":"2.0","method":"eth_call","params":[{"to":token_address,"data":data},"latest"],"id":1}, timeout=10)
-                    if r.status_code == 200:
-                        bal = int(r.json().get("result","0x0"), 16)
-                        return round(bal/1e6, 2), "USDC", 1.0
-                r = requests.post(rpc, json={"jsonrpc":"2.0","method":"eth_getBalance","params":[address,"latest"],"id":1}, timeout=10)
-                if r.status_code == 200:
-                    wei = int(r.json().get("result","0x0"), 16)
-                    ticker_map = {"ethereum":"ETH","bsc":"BNB","polygon":"MATIC","base":"ETH","linea":"ETH"}
-                    price_map = {"ethereum":1800,"bsc":600,"polygon":0.50,"base":1800,"linea":1800}
-                    return round(wei/1e18, 6), ticker_map.get(chain,"ETH"), price_map.get(chain, 1800)
+                    result = self._rpc_call(chain, "eth_call", [{"to": token_address, "data": data}, "latest"])
+                    if result and result != '0x':
+                        bal = int(result, 16) / (10 ** decimals)
+                        cg_id = self.COINGECKO_IDS.get(chain, "ethereum")
+                        if cg_id in ("ethereum",):
+                            usd_rate = self._fetch_token_price(chain, token_address) or 0
+                        else:
+                            usd_rate = self._fetch_price(cg_id) or 0
+                        if not usd_rate:
+                            usd_rate = 0
+                        return round(bal, 4), ticker, usd_rate
+                    return None
+                result = self._rpc_call(chain, "eth_getBalance", [address, "latest"])
+                if result and result != '0x':
+                    wei = int(result, 16)
+                    cg_id = self.COINGECKO_IDS.get(chain, "ethereum")
+                    usd_rate = self._fetch_price(cg_id)
+                    return round(wei/1e18, 6), ticker, usd_rate or 0
             elif chain == "bitcoin":
-                r = requests.get(f"https://blockchain.info/balance?active={address}", timeout=10)
+                r = requests.get(f"https://blockchain.info/balance?active={address}", timeout=8)
                 if r.status_code == 200:
                     sat = r.json().get(address, {}).get("final_balance", 0)
-                    return round(sat/1e8, 8), "BTC", 67000
+                    usd_rate = self._fetch_price("bitcoin")
+                    return round(sat/1e8, 8), "BTC", usd_rate or 0
             elif chain == "tron":
-                r = requests.get(f"https://api.trongrid.io/v1/accounts/{address}", timeout=10)
+                r = requests.get(f"https://api.trongrid.io/v1/accounts/{address}", timeout=8)
                 if r.status_code == 200:
-                    data = r.json()
-                    if data.get("data"):
-                        bal = data["data"][0].get("balance", 0)
-                        return round(bal/1e6, 2), "TRX", 0.12
+                    d = r.json().get("data")
+                    if d:
+                        bal = d[0].get("balance", 0) / 1e6
+                        usd_rate = self._fetch_price("tron")
+                        return round(bal, 2), "TRX", usd_rate or 0
             elif chain == "xrp":
-                r = requests.get(f"https://data.ripple.com/v2/accounts/{address}/balances", timeout=10)
+                r = requests.get(f"https://data.ripple.com/v2/accounts/{address}/balances", timeout=8)
                 if r.status_code == 200:
                     for b in r.json().get("balances", []):
                         if b.get("currency") == "XRP":
-                            return round(float(b["value"]), 2), "XRP", 0.50
+                            usd_rate = self._fetch_price("ripple")
+                            return round(float(b["value"]), 2), "XRP", usd_rate or 0
             elif chain == "dogecoin":
-                r = requests.get(f"https://dogechain.info/api/v1/address/balance/{address}", timeout=10)
+                r = requests.get(f"https://dogechain.info/api/v1/address/balance/{address}", timeout=8)
                 if r.status_code == 200:
                     bal = r.json().get("balance", 0)
-                    return round(float(bal), 2), "DOGE", 0.15
-        except:
-            pass
+                    usd_rate = self._fetch_price("dogecoin")
+                    return round(float(bal), 2), "DOGE", usd_rate or 0
+        except Exception as e:
+            print(f"Wallet error {chain}: {e}")
         return None
+
