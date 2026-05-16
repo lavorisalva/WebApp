@@ -276,9 +276,10 @@ if not is_cloud:
                       tg_token=c_tg_tok, tg_chat=c_tg_chat)
             python = r"C:\Users\ADMIN\AppData\Local\Programs\Python\Python311\python.exe"
             log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "daemon.log"), "w")
+            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
             subprocess.Popen([python, "bot_daemon.py"], cwd=os.path.dirname(os.path.abspath(__file__)),
                             stdout=log, stderr=subprocess.STDOUT,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+                            creationflags=flags)
             st.success("Bot avviato in background!")
             st.rerun()
 
