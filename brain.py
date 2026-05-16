@@ -86,16 +86,15 @@ class NexusBrain:
         return symbol.replace('/', '')
 
     def _fetch_coin_price(self, symbol):
-        # 1. Binance autenticato
         try:
             return self.exchange.fetch_ticker(symbol)['last']
         except:
             pass
-        # 2. Binance API pubblica (senza auth — funziona anche su cloud)
         bn_pair = self._bn_symbol(symbol)
         sources = [
             f"https://api.binance.com/api/v3/ticker/price?symbol={bn_pair}",
             f"https://api.binance.us/api/v3/ticker/price?symbol={bn_pair}",
+            f"https://api1.binance.com/api/v3/ticker/price?symbol={bn_pair}",
         ]
         for url in sources:
             try:
@@ -104,7 +103,6 @@ class NexusBrain:
                     return float(r.json()['price'])
             except:
                 pass
-        # 3. CoinGecko fallback
         try:
             cg_id = self._cg_symbol(symbol)
             r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd", timeout=5)
@@ -115,27 +113,23 @@ class NexusBrain:
         return 0
 
     def _fetch_coin_ohlcv(self, symbol):
-        # 1. Binance autenticato
         try:
             return self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
         except:
             pass
-        # 2. Binance API pubblica
         bn_pair = self._bn_symbol(symbol)
-        try:
-            r = requests.get(f"https://api.binance.com/api/v3/klines?symbol={bn_pair}&interval=1h&limit=50", timeout=5)
-            if r.status_code == 200:
-                return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in r.json()]
-        except:
-            pass
-        # 3. CoinGecko fallback
-        try:
-            cg_id = self._cg_symbol(symbol)
-            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?days=2&vs_currency=usd", timeout=5)
-            if r.status_code == 200:
-                return [[int(t), o, h, l, c, 0] for t, o, h, l, c in r.json()]
-        except:
-            pass
+        klines_sources = [
+            f"https://api.binance.com/api/v3/klines?symbol={bn_pair}&interval=1h&limit=50",
+            f"https://api1.binance.com/api/v3/klines?symbol={bn_pair}&interval=1h&limit=50",
+            f"https://api.binance.us/api/v3/klines?symbol={bn_pair}&interval=1h&limit=50",
+        ]
+        for url in klines_sources:
+            try:
+                r = requests.get(url, timeout=5)
+                if r.status_code == 200:
+                    return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in r.json()]
+            except:
+                pass
         return []
 
     def _fetch_price(self, coin_id):
@@ -316,12 +310,12 @@ class NexusBrain:
         if not self.client:
             return {"azione": "ERRORE", "ragionamento": "Chiave API mancante"}, 0, 0
         price = self._fetch_coin_price(symbol)
+        if price == 0:
+            return {"azione": "ERRORE", "ragionamento": "Prezzo non disponibile"}, 0, 0
         ohlcv = self._fetch_coin_ohlcv(symbol)
-        if price == 0 or len(ohlcv) < 14:
-            return {"azione": "ERRORE", "ragionamento": "Prezzi non disponibili (Binance bloccato su cloud)"}, 0, 0
         try:
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-            rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
+            rsi = float(ta.momentum.rsi(df['c'], window=14).iloc[-1])
         except:
             rsi = 50
 
