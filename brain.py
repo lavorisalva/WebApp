@@ -10,6 +10,18 @@ from openai import OpenAI
 from news_fetcher import get_latest_crypto_news
 
 class NexusBrain:
+    SYMBOL_TO_CG = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "ripple",
+                     "ADA": "cardano", "DOGE": "dogecoin", "DOT": "polkadot", "MATIC": "matic-network",
+                     "SHIB": "shiba-inu", "AVAX": "avalanche-2", "LINK": "chainlink", "UNI": "uniswap",
+                     "ATOM": "cosmos", "XLM": "stellar", "VET": "vechain", "FIL": "filecoin",
+                     "ALGO": "algorand", "MANA": "decentraland", "SAND": "the-sandbox", "APE": "apecoin",
+                     "NEAR": "near", "APT": "aptos", "ARB": "arbitrum", "OP": "optimism",
+                     "AAVE": "aave", "CRV": "curve-dao-token", "SNX": "synthetix-network-token",
+                     "COMP": "compound-governance-token", "MKR": "maker", "YFI": "yearn-finance",
+                     "AXS": "axie-infinity", "CHZ": "chiliz", "FTM": "fantom", "EGLD": "elrond-erd-2",
+                     "ICP": "internet-computer", "HNT": "helium", "NEO": "neo", "KSM": "kusama",
+                     "LTC": "litecoin", "BCH": "bitcoin-cash", "EOS": "eos", "TRX": "tron",
+                     "XMR": "monero", "DASH": "dash", "ETC": "ethereum-classic", "ZEC": "zcash"}
     COINGECKO_IDS = {"ethereum":"ethereum","bsc":"binancecoin","polygon":"matic-network",
                      "base":"ethereum","linea":"ethereum","bitcoin":"bitcoin",
                      "tron":"tron","xrp":"ripple","dogecoine":"dogecoin"}
@@ -65,6 +77,41 @@ class NexusBrain:
             except:
                 continue
         return None
+
+    def _cg_symbol(self, symbol):
+        base = symbol.split('/')[0]
+        return self.SYMBOL_TO_CG.get(base, base.lower())
+
+    def _fetch_coin_price(self, symbol):
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            return ticker['last']
+        except:
+            pass
+        try:
+            cg_id = self._cg_symbol(symbol)
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd", timeout=8)
+            if r.status_code == 200:
+                return r.json().get(cg_id, {}).get('usd', 0)
+        except:
+            pass
+        return 0
+
+    def _fetch_coin_ohlcv(self, symbol):
+        try:
+            return self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        except:
+            pass
+        try:
+            cg_id = self._cg_symbol(symbol)
+            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?days=2&vs_currency=usd", timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                import time
+                return [[int(t), o, h, l, c, 0] for t, o, h, l, c in data]
+        except:
+            pass
+        return []
 
     def _fetch_price(self, coin_id):
         if coin_id in self._price_cache:
@@ -243,14 +290,15 @@ class NexusBrain:
     def decide_trade(self, symbol, model_id):
         if not self.client:
             return {"azione": "ERRORE", "ragionamento": "Chiave API mancante"}, 0, 0
+        price = self._fetch_coin_price(symbol)
+        ohlcv = self._fetch_coin_ohlcv(symbol)
+        if price == 0 or len(ohlcv) < 14:
+            return {"azione": "ERRORE", "ragionamento": "Prezzi non disponibili (Binance bloccato su cloud)"}, 0, 0
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
-            price = ticker['last']
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
             rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
-        except Exception as e: 
-            return {"azione": "ERRORE", "ragionamento": f"Errore dati Binance: {str(e)}"}, 0, 0
+        except:
+            rsi = 50
 
         news = " | ".join(get_latest_crypto_news()[:5])
         prompt = f"""Dati: {symbol} a {price}$, RSI {rsi:.2f}. News: {news}.
@@ -340,12 +388,14 @@ Rispondi con JSON: {{"azione":"COMPRA","stop_loss":{price*0.95:.2f},"take_profit
                            f"Entry: ${trade['entry_price']:.2f} | Uscita: ${current_price:.2f}")
 
     def _ai_recheck(self, trade, current_price, model):
+        rsi = 50
         try:
-            ohlcv = self.exchange.fetch_ohlcv(trade['symbol'], timeframe='1h', limit=50)
-            df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-            rsi = ta.momentum.rsi(df['c'], window=14).iloc[-1]
+            ohlcv = self._fetch_coin_ohlcv(trade['symbol'])
+            if ohlcv:
+                df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                rsi = float(ta.momentum.rsi(df['c'], window=14).iloc[-1])
         except:
-            rsi = 50
+            pass
         entry = trade['entry_price']
         profit = ((current_price - entry) / entry) * 100
         hours = 0
@@ -389,10 +439,8 @@ Rispondi SOLO con JSON:
             cursor = conn.cursor()
             trades = cursor.execute("SELECT * FROM trades WHERE status = 'APERTO' AND user_id=?", (user_id,)).fetchall()
             for t in trades:
-                try:
-                    ticker = self.exchange.fetch_ticker(t['symbol'])
-                    curr = ticker['last']
-                except:
+                curr = self._fetch_coin_price(t['symbol'])
+                if curr == 0:
                     continue
                 entry_price = t['entry_price']
                 highest = max(t['highest_price'] or entry_price, curr)

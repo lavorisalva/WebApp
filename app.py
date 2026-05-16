@@ -361,19 +361,15 @@ with TAB_TRADING:
             st.subheader("Trading Manuale")
             col_amt, col_sl, col_tp = st.columns(3)
             amt = col_amt.number_input("Importo (USDT)", min_value=5.0, max_value=100000.0, value=20.0, step=5.0, key="manual_amt")
-            try:
-                curr_price = brain.exchange.fetch_ticker(sym)['last']
-                sl_default = float(round(curr_price * 0.95, 2))
-                tp_default = float(round(curr_price * 1.05, 2))
-            except:
-                curr_price = 0.0; sl_default = 0.0; tp_default = 0.0
+            curr_price = brain._fetch_coin_price(sym)
+            sl_default = float(round(curr_price * 0.95, 2)) if curr_price else 0.0
+            tp_default = float(round(curr_price * 1.05, 2)) if curr_price else 0.0
             sl_price = col_sl.number_input("SL (USDT)", min_value=0.0, value=sl_default, step=1.0, key="manual_sl", format="%.2f")
             tp_price = col_tp.number_input("TP (USDT)", min_value=0.0, value=tp_default, step=1.0, key="manual_tp", format="%.2f")
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 if st.button("COMPRA", use_container_width=True, type="primary"):
-                    try: current_price = brain.exchange.fetch_ticker(sym)['last']
-                    except: current_price = 0
+                    current_price = brain._fetch_coin_price(sym)
                     trade_data = {"azione":"COMPRA","stop_loss":sl_price,"take_profit":tp_price,"ragionamento":"Manuale"}
                     if mode == "Real Trading" and bkey:
                         with st.spinner("Ordine in corso..."):
@@ -385,8 +381,7 @@ with TAB_TRADING:
                         st.success(f"Acquisto manuale registrato! (${amt})")
             with col_b2:
                 if st.button("VENDI", use_container_width=True, type="secondary"):
-                    try: current_price = brain.exchange.fetch_ticker(sym)['last']
-                    except: current_price = 0
+                    current_price = brain._fetch_coin_price(sym)
                     trade_data = {"azione":"VENDI","stop_loss":tp_price,"take_profit":sl_price,"ragionamento":"Manuale"}
                     if mode == "Real Trading" and bkey:
                         with st.spinner("Ordine in corso..."):
@@ -490,22 +485,25 @@ with TAB_WALLET:
                     else: st.error("Nessun dato. Verifica indirizzo o rete.")
             else: st.warning("Inserisci un indirizzo")
     with col_w2:
-        st.subheader("Saldo Exchange (Binance)")
-        st.caption("Leggi il saldo dal tuo account Binance collegato")
-        if bkey and bsec:
-            if st.button("Aggiorna Saldo Exchange", use_container_width=True):
-                with st.spinner("Recupero saldo Binance..."):
-                    ex_bal = brain.get_exchange_balance()
-                    if isinstance(ex_bal, dict):
-                        for token, amt in sorted(ex_bal.items(), key=lambda x: x[1], reverse=True):
-                            if amt > 0:
-                                st.metric(token, f"{amt:.6f}".rstrip('0').rstrip('.') if amt < 1000 else f"{amt:,.2f}")
-                    elif isinstance(ex_bal, str):
-                        st.error(ex_bal)
-                    else:
-                        st.error("Inserisci le credenziali Binance nella sidebar.")
+        st.subheader("Saldo Exchange")
+        if is_cloud:
+            st.info("Binance non disponibile su cloud (451). Usa Paper Trading.")
         else:
-            st.info("Inserisci Chiave Binance e Segreto nella sidebar per vedere il saldo.")
+            st.caption("Leggi il saldo dal tuo account Binance collegato")
+            if bkey and bsec:
+                if st.button("Aggiorna Saldo Exchange", use_container_width=True):
+                    with st.spinner("Recupero saldo Binance..."):
+                        ex_bal = brain.get_exchange_balance()
+                        if isinstance(ex_bal, dict):
+                            for token, amt in sorted(ex_bal.items(), key=lambda x: x[1], reverse=True):
+                                if amt > 0:
+                                    st.metric(token, f"{amt:.6f}".rstrip('0').rstrip('.') if amt < 1000 else f"{amt:,.2f}")
+                        elif isinstance(ex_bal, str):
+                            st.error(ex_bal)
+                        else:
+                            st.error("Inserisci le credenziali Binance nella sidebar.")
+            else:
+                st.info("Inserisci Chiave Binance e Segreto nella sidebar per vedere il saldo.")
 
 st.divider()
 st.caption("SBTrading-Pro · made with 💚 by SBGE Studio")
